@@ -27,14 +27,11 @@ package org.photonvision;
 import edu.wpi.first.apriltag.AprilTagFieldLayout;
 import edu.wpi.first.hal.FRCNetComm.tResourceType;
 import edu.wpi.first.hal.HAL;
+import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.Matrix;
 import edu.wpi.first.math.Pair;
-import edu.wpi.first.math.geometry.Pose2d;
-import edu.wpi.first.math.geometry.Pose3d;
-import edu.wpi.first.math.geometry.Rotation3d;
-import edu.wpi.first.math.geometry.Transform3d;
-import edu.wpi.first.math.geometry.Translation2d;
-import edu.wpi.first.math.geometry.Translation3d;
+import edu.wpi.first.math.geometry.*;
+import edu.wpi.first.math.interpolation.TimeInterpolatableBuffer;
 import edu.wpi.first.math.numbers.N1;
 import edu.wpi.first.math.numbers.N3;
 import edu.wpi.first.math.numbers.N5;
@@ -49,7 +46,6 @@ import org.photonvision.estimation.TargetModel;
 import org.photonvision.estimation.VisionEstimation;
 import org.photonvision.targeting.PhotonPipelineResult;
 import org.photonvision.targeting.PhotonTrackedTarget;
-import org.photonvision.targeting.TargetCorner;
 
 /**
  * The PhotonPoseEstimator class filters or combines readings from all the AprilTags visible at a
@@ -93,7 +89,9 @@ public class PhotonPoseEstimator {
          * to access the robot's yaw heading, and MUST have setReferencePose called every frame so
          * heading data is up-to-date.
          */
-        IMU_SOLVE_BEST_TAG
+        IMU_SOLVE_BEST_TAG,
+
+        TWO_TAG_TRIG_SOLVER_ON_RIO
     }
 
     private AprilTagFieldLayout fieldTags;
@@ -107,6 +105,7 @@ public class PhotonPoseEstimator {
     private Pose3d referencePose;
     protected double poseCacheTimestampSeconds = -1;
     private final Set<Integer> reportedErrors = new HashSet<>();
+
 
     /**
      * Create a new PhotonPoseEstimator.
@@ -280,6 +279,8 @@ public class PhotonPoseEstimator {
         setLastPose(new Pose3d(lastPose));
     }
 
+
+
     /**
      * @return The current transform from the center of the robot to the camera mount position
      */
@@ -407,13 +408,16 @@ public class PhotonPoseEstimator {
                 estimatedPose = averageBestTargetsStrategy(cameraResult);
                 break;
             case MULTI_TAG_PNP_ON_RIO:
-                estimatedPose = multiTagOnRioStrategy(cameraResult, cameraMatrix, distCoeffs);
+                estimatedPose = multiTagPNPOnRioStrategy(cameraResult, cameraMatrix, distCoeffs);
                 break;
             case MULTI_TAG_PNP_ON_COPROCESSOR:
                 estimatedPose = multiTagOnCoprocStrategy(cameraResult, cameraMatrix, distCoeffs);
                 break;
             case IMU_SOLVE_BEST_TAG:
                 estimatedPose = imuTagOnRioStrategy(cameraResult, cameraMatrix);
+                break;
+            case TWO_TAG_TRIG_SOLVER_ON_RIO:
+                estimatedPose = twoTagTrigSolverOnRioStrategy(cameraResult, cameraMatrix, distCoeffs);
                 break;
             default:
                 DriverStation.reportError(
@@ -455,15 +459,8 @@ public class PhotonPoseEstimator {
         if (result.hasTargets() && cameraMatrixOpt.isPresent()) {
             PhotonTrackedTarget target = result.getBestTarget();
 
-            List<TargetCorner> targetCorners = target.getDetectedCorners();
-            double sumX = 0.0;
-            double sumY = 0.0;
-            for (TargetCorner t : targetCorners) {
-                sumX += t.x;
-                sumY += t.y;
-            }
 
-            Point tagCenter = new Point(sumX / 4, sumY / 4);
+            Point tagCenter = PhotonUtils.calculateTagCenter(target.getDetectedCorners());
 
             Rotation3d tagAngle = PhotonUtils.correctPixelRot(tagCenter, cameraMatrixOpt.get());
 
@@ -508,7 +505,124 @@ public class PhotonPoseEstimator {
         }
     }
 
-    private Optional<EstimatedRobotPose> multiTagOnRioStrategy(
+    private Optional<EstimatedRobotPose> twoTagTrigSolverOnRioStrategy(
+            PhotonPipelineResult result, Optional<Matrix<N3, N3>> cameraMatrixOpt,
+            Optional<Matrix<N5, N1>> distCoeffsOpt) {
+
+        if(result.getTargets().size() >1 && cameraMatrixOpt.isPresent()) {
+
+            PhotonTrackedTarget targ1 = result.getTargets().get(0);
+            PhotonTrackedTarget targ2 = result.getTargets().get(1);
+
+
+            Optional<Pose3d> tag1Pose = fieldTags.getTagPose(targ1.getFiducialId());
+            if(tag1Pose.isEmpty()) {
+                reportFiducialPoseError(targ1.getFiducialId());
+                return Optional.empty();
+            }
+
+            Rotation3d tag1Angle = PhotonUtils.correctPixelRot(
+                    PhotonUtils.calculateTagCenter(targ1.getDetectedCorners()),
+                    cameraMatrixOpt.get()
+            );
+
+            double dist1 = -PhotonUtils.calculateDistanceToTargetMeters(
+                    robotToCamera.getZ(), tag1Pose.get().getZ(),
+                    robotToCamera.getY(), tag1Angle.getY()
+            );
+
+            Optional<Pose3d> tag2Pose = fieldTags.getTagPose(targ2.getFiducialId());
+            if(tag2Pose.isEmpty()) {
+                reportFiducialPoseError(targ2.getFiducialId());
+                return Optional.empty();
+            }
+
+            Rotation3d tag2Angle = PhotonUtils.correctPixelRot(
+                    PhotonUtils.calculateTagCenter(targ2.getDetectedCorners()),
+                    cameraMatrixOpt.get()
+            );
+
+            double dist2 = -PhotonUtils.calculateDistanceToTargetMeters(
+                    robotToCamera.getZ(), tag2Pose.get().getZ(),
+                    robotToCamera.getY(), tag2Angle.getY()
+            );
+
+            boolean tag1Primary = dist1<dist2;
+
+            double angleDiff = Math.abs(
+                    tag2Angle.getZ()-tag1Angle.getZ()
+            );
+
+            Pose3d primaryTag;
+            Rotation3d primaryTagAngles;
+            Pose3d secondaryTag;
+            double distHypot;
+            if(tag1Primary) {
+                distHypot = dist1;
+                primaryTag = tag1Pose.get();
+                secondaryTag = tag2Pose.get();
+                primaryTagAngles = tag1Angle;
+            } else {
+                distHypot = dist2;
+                primaryTag = tag2Pose.get();
+                secondaryTag = tag1Pose.get();
+                primaryTagAngles = tag2Angle;
+            }
+
+            // using the law of sines to compute the unknown angle
+            double transitoryAngle =
+                    (Math.sin(angleDiff)*distHypot)/
+                    tag1Pose.get().getTranslation().toTranslation2d().getDistance(
+                            tag2Pose.get().getTranslation().toTranslation2d()
+                    );
+
+            double operationalAngle = (Math.PI-angleDiff-transitoryAngle)-Math.PI/2;
+
+            double localX = Math.cos(operationalAngle)*distHypot;
+            double localY = Math.sin(operationalAngle)*distHypot;
+
+            Translation2d localPosition = new Translation2d(localX,localY).plus(robotToCamera.getTranslation().toTranslation2d());
+
+            Rotation2d fieldRot = PhotonUtils.getYawToTranslation(
+                    primaryTag.toPose2d().getTranslation(),
+                    secondaryTag.toPose2d().getTranslation()
+            );
+
+
+            Translation2d finalDelta = localPosition.rotateBy(fieldRot);
+
+            Translation2d finalTranslation = primaryTag.getTranslation().
+                    toTranslation2d().plus(finalDelta);
+
+            Rotation2d yawToTagFR = PhotonUtils.getYawToTranslation(
+                    finalTranslation,
+                    primaryTag.toPose2d().getTranslation()
+            );
+
+            Rotation2d yawToTagRR = primaryTagAngles.toRotation2d().plus(robotToCamera.getRotation().toRotation2d());
+
+
+
+
+            Pose3d robotPosition = new Pose3d(
+                    new Pose2d(
+                            finalTranslation,
+                            yawToTagFR.plus(yawToTagRR)
+                    )
+            );
+
+            return Optional.of(
+                    new EstimatedRobotPose(
+                            robotPosition,
+                            result.getTimestampSeconds(),
+                            result.getTargets(),
+                            PoseStrategy.TWO_TAG_TRIG_SOLVER_ON_RIO));
+        } else {
+            return update(result, cameraMatrixOpt, distCoeffsOpt, this.multiTagFallbackStrategy);
+        }
+    }
+
+    private Optional<EstimatedRobotPose> multiTagPNPOnRioStrategy(
             PhotonPipelineResult result,
             Optional<Matrix<N3, N3>> cameraMatrixOpt,
             Optional<Matrix<N5, N1>> distCoeffsOpt) {

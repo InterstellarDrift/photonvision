@@ -28,6 +28,9 @@ import edu.wpi.first.math.Matrix;
 import edu.wpi.first.math.geometry.*;
 import edu.wpi.first.math.numbers.N3;
 import org.opencv.core.Point;
+import org.photonvision.targeting.TargetCorner;
+
+import java.util.List;
 
 public final class PhotonUtils {
     private PhotonUtils() {
@@ -195,8 +198,11 @@ public final class PhotonUtils {
      * @return double Yaw to the target
      */
     public static Rotation2d getYawToPose(Pose2d robotPose, Pose2d targetPose) {
-        Translation2d relativeTrl = targetPose.relativeTo(robotPose).getTranslation();
-        return new Rotation2d(relativeTrl.getX(), relativeTrl.getY());
+        return getYawToTranslation(robotPose.getTranslation(), targetPose.getTranslation());
+    }
+
+    public static Rotation2d getYawToTranslation(Translation2d perspectivePoint, Translation2d targetPoint) {
+        return perspectivePoint.minus(targetPoint).getAngle();
     }
 
     /**
@@ -209,6 +215,8 @@ public final class PhotonUtils {
     public static double getDistanceToPose(Pose2d robotPose, Pose2d targetPose) {
         return robotPose.getTranslation().getDistance(targetPose.getTranslation());
     }
+
+
 
     /**
      * Corrects a given pixel for perspective distortion
@@ -232,5 +240,16 @@ public final class PhotonUtils {
         var pitch = new Rotation2d(fy / Math.cos(Math.atan(xOffset / fx)), -yOffset);
 
         return new Rotation3d(0, pitch.getRadians(), yaw.getRadians());
+    }
+
+    public static Point calculateTagCenter(List<TargetCorner> tagCorners) {
+        double sumX = 0.0;
+        double sumY = 0.0;
+        for (TargetCorner t : tagCorners) {
+            sumX += t.x;
+            sumY += t.y;
+        }
+
+        return new Point(sumX/4,sumY/4);
     }
 }
