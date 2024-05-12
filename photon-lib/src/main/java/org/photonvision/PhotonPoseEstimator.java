@@ -571,25 +571,28 @@ public class PhotonPoseEstimator {
 
             // using the law of sines to compute the unknown angle
             double transitoryAngle =
-                    (Math.sin(angleDiff)*distHypot)/
+                    Math.abs((Math.sin(angleDiff)*distHypot)/
                     tag1Pose.get().getTranslation().toTranslation2d().getDistance(
                             tag2Pose.get().getTranslation().toTranslation2d()
-                    );
+                    ));
 
             double operationalAngle = (Math.PI-angleDiff-transitoryAngle)-Math.PI/2;
 
             double localX = Math.cos(operationalAngle)*distHypot;
             double localY = Math.sin(operationalAngle)*distHypot;
 
-            Translation2d localPosition = new Translation2d(localX,localY).plus(robotToCamera.getTranslation().toTranslation2d());
+            Translation2d localPosition = new Translation2d(localX,localY);//.plus(robotToCamera.getTranslation().toTranslation2d());
+            System.out.println("ORIGDELTA: "+ localPosition);
 
-            Rotation2d fieldRot = PhotonUtils.getYawToTranslation(
-                    primaryTag.toPose2d().getTranslation(),
-                    secondaryTag.toPose2d().getTranslation()
-            );
+//            Rotation2d fieldRot = PhotonUtils.getYawToTranslation(
+//                    secondaryTag.toPose2d().getTranslation(),
+//                    primaryTag.toPose2d().getTranslation()
+//            );
 
+            Rotation2d fieldRot = Rotation2d.fromDegrees(0);
 
-            Translation2d finalDelta = localPosition.rotateBy(fieldRot);
+            Translation2d finalDelta = localPosition;//.rotateBy(fieldRot);
+            System.out.println("FINALDELTA: "+ finalDelta);
 
             Translation2d finalTranslation = primaryTag.getTranslation().
                     toTranslation2d().plus(finalDelta);
@@ -607,7 +610,8 @@ public class PhotonPoseEstimator {
             Pose3d robotPosition = new Pose3d(
                     new Pose2d(
                             finalTranslation,
-                            yawToTagFR.plus(yawToTagRR)
+                            new Rotation2d(Math.PI/2)
+//                            yawToTagFR.plus(yawToTagRR)
                     )
             );
 
