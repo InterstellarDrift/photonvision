@@ -30,6 +30,7 @@ import edu.wpi.first.hal.HAL;
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.Matrix;
 import edu.wpi.first.math.Pair;
+import edu.wpi.first.math.VecBuilder;
 import edu.wpi.first.math.geometry.*;
 import edu.wpi.first.math.interpolation.TimeInterpolatableBuffer;
 import edu.wpi.first.math.numbers.N1;
@@ -41,6 +42,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+
+import edu.wpi.first.wpilibj.Timer;
 import org.opencv.core.Point;
 import org.photonvision.estimation.TargetModel;
 import org.photonvision.estimation.VisionEstimation;
@@ -509,15 +512,22 @@ public class PhotonPoseEstimator {
             PhotonPipelineResult result, Optional<Matrix<N3, N3>> cameraMatrixOpt,
             Optional<Matrix<N5, N1>> distCoeffsOpt) {
 
-        if(result.getTargets().size() >1 && cameraMatrixOpt.isPresent()) {
+
+
+        if(cameraMatrixOpt.isPresent() && result.hasTargets() &&
+                result.targets.size()>1) {
+
 
             PhotonTrackedTarget targ1 = result.getTargets().get(0);
             PhotonTrackedTarget targ2 = result.getTargets().get(1);
 
-
             Optional<Pose3d> tag1Pose = fieldTags.getTagPose(targ1.getFiducialId());
-            if(tag1Pose.isEmpty()) {
-                reportFiducialPoseError(targ1.getFiducialId());
+            if (tag1Pose.isEmpty()) {
+                return Optional.empty();
+            }
+
+            Optional<Pose3d> tag2Pose = fieldTags.getTagPose(targ2.getFiducialId());
+            if (tag2Pose.isEmpty()) {
                 return Optional.empty();
             }
 
@@ -526,20 +536,14 @@ public class PhotonPoseEstimator {
                     cameraMatrixOpt.get()
             );
 
-            double dist1 = -PhotonUtils.calculateDistanceToTargetMeters(
-                    robotToCamera.getZ(), tag1Pose.get().getZ(),
-                    robotToCamera.getY(), tag1Angle.getY()
-            );
-
-            Optional<Pose3d> tag2Pose = fieldTags.getTagPose(targ2.getFiducialId());
-            if(tag2Pose.isEmpty()) {
-                reportFiducialPoseError(targ2.getFiducialId());
-                return Optional.empty();
-            }
-
             Rotation3d tag2Angle = PhotonUtils.correctPixelRot(
                     PhotonUtils.calculateTagCenter(targ2.getDetectedCorners()),
                     cameraMatrixOpt.get()
+            );
+
+            double dist1 = -PhotonUtils.calculateDistanceToTargetMeters(
+                    robotToCamera.getZ(), tag1Pose.get().getZ(),
+                    robotToCamera.getY(), tag1Angle.getY()
             );
 
             double dist2 = -PhotonUtils.calculateDistanceToTargetMeters(
@@ -547,52 +551,46 @@ public class PhotonPoseEstimator {
                     robotToCamera.getY(), tag2Angle.getY()
             );
 
-            boolean tag1Primary = dist1<dist2;
-
-            double angleDiff = Math.abs(
-                    tag2Angle.getZ()-tag1Angle.getZ()
-            );
+            boolean tag1Primary = tag1Angle.getZ() < tag2Angle.getZ();
 
             Pose3d primaryTag;
             Rotation3d primaryTagAngles;
             Pose3d secondaryTag;
             double distHypot;
-            if(tag1Primary) {
+            double longHypot;
+            if (tag1Primary) {
                 distHypot = dist1;
+                longHypot = dist2;
                 primaryTag = tag1Pose.get();
                 secondaryTag = tag2Pose.get();
                 primaryTagAngles = tag1Angle;
             } else {
                 distHypot = dist2;
+                longHypot = dist1;
                 primaryTag = tag2Pose.get();
                 secondaryTag = tag1Pose.get();
                 primaryTagAngles = tag2Angle;
             }
 
-            // using the law of sines to compute the unknown angle
-            double transitoryAngle =
-                    Math.abs((Math.sin(angleDiff)*distHypot)/
-                    tag1Pose.get().getTranslation().toTranslation2d().getDistance(
-                            tag2Pose.get().getTranslation().toTranslation2d()
-                    ));
+            double intertagdist = tag1Pose.get().getTranslation().toTranslation2d().getDistance(
+                    tag2Pose.get().getTranslation().toTranslation2d()
+            );
 
-            double operationalAngle = (Math.PI-angleDiff-transitoryAngle)-Math.PI/2;
+            double operationalAngle = Math.acos(
+                    ((distHypot * distHypot) + (intertagdist * intertagdist) - (longHypot * longHypot)) /
+                            (2 * distHypot * intertagdist)
+            );
 
-            double localX = Math.cos(operationalAngle)*distHypot;
-            double localY = Math.sin(operationalAngle)*distHypot;
+            double localX = (Math.cos(operationalAngle) * distHypot);
+            double localY = (Math.sin(operationalAngle) * distHypot);
+            Translation2d localPosition = new Translation2d(localX, localY);
 
-            Translation2d localPosition = new Translation2d(localX,localY);//.plus(robotToCamera.getTranslation().toTranslation2d());
-            System.out.println("ORIGDELTA: "+ localPosition);
+            Rotation2d fieldRot = PhotonUtils.getYawToTranslation(
+                    secondaryTag.toPose2d().getTranslation(),
+                    primaryTag.toPose2d().getTranslation()
+            );
 
-//            Rotation2d fieldRot = PhotonUtils.getYawToTranslation(
-//                    secondaryTag.toPose2d().getTranslation(),
-//                    primaryTag.toPose2d().getTranslation()
-//            );
-
-            Rotation2d fieldRot = Rotation2d.fromDegrees(0);
-
-            Translation2d finalDelta = localPosition;//.rotateBy(fieldRot);
-            System.out.println("FINALDELTA: "+ finalDelta);
+            Translation2d finalDelta = localPosition.rotateBy(fieldRot);
 
             Translation2d finalTranslation = primaryTag.getTranslation().
                     toTranslation2d().plus(finalDelta);
@@ -604,14 +602,10 @@ public class PhotonPoseEstimator {
 
             Rotation2d yawToTagRR = primaryTagAngles.toRotation2d().plus(robotToCamera.getRotation().toRotation2d());
 
-
-
-
             Pose3d robotPosition = new Pose3d(
                     new Pose2d(
                             finalTranslation,
-                            new Rotation2d(Math.PI/2)
-//                            yawToTagFR.plus(yawToTagRR)
+                            yawToTagFR.plus(yawToTagRR)
                     )
             );
 
@@ -621,6 +615,9 @@ public class PhotonPoseEstimator {
                             result.getTimestampSeconds(),
                             result.getTargets(),
                             PoseStrategy.TWO_TAG_TRIG_SOLVER_ON_RIO));
+
+
+
         } else {
             return update(result, cameraMatrixOpt, distCoeffsOpt, this.multiTagFallbackStrategy);
         }
