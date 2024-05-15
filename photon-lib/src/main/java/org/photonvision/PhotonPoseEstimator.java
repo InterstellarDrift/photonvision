@@ -488,14 +488,19 @@ public class PhotonPoseEstimator {
 
             Translation2d robotToTag = tagToCamera.plus(robotToCamera.getTranslation().toTranslation2d());
 
+            Optional<Rotation2d> robotHeading = PhotonUtils.getHeadingSample(result.getTimestampSeconds());
+
+            if(robotHeading.isEmpty()) {
+                return Optional.empty();
+            }
             // rotating the robot-relative tag position by the IMU yaw to make it field-relative
-            Translation2d fixedTrans = robotToTag.rotateBy(referencePose.getRotation().toRotation2d());
+            Translation2d fixedTrans = robotToTag.rotateBy(robotHeading.get());
 
             Translation2d finalTranslation =
                     tagPose.get().getTranslation().toTranslation2d().plus(fixedTrans);
 
             Pose3d robotPosition =
-                    new Pose3d(new Pose2d(finalTranslation, referencePose.getRotation().toRotation2d()));
+                    new Pose3d(new Pose2d(finalTranslation, robotHeading.get()));
 
             return Optional.of(
                     new EstimatedRobotPose(

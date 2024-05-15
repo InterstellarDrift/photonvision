@@ -26,11 +26,13 @@ package org.photonvision;
 
 import edu.wpi.first.math.Matrix;
 import edu.wpi.first.math.geometry.*;
+import edu.wpi.first.math.interpolation.TimeInterpolatableBuffer;
 import edu.wpi.first.math.numbers.N3;
 import org.opencv.core.Point;
 import org.photonvision.targeting.TargetCorner;
 
 import java.util.List;
+import java.util.Optional;
 
 public final class PhotonUtils {
     private PhotonUtils() {
@@ -251,5 +253,23 @@ public final class PhotonUtils {
         }
 
         return new Point(sumX/4,sumY/4);
+    }
+
+    private static final TimeInterpolatableBuffer<Rotation2d> headingBuffer = TimeInterpolatableBuffer.createBuffer(
+            1.0
+    );
+
+    private static final TimeInterpolatableBuffer<Double> headingVelocityBuffer = TimeInterpolatableBuffer.createDoubleBuffer(1.0);
+    public static void registerHeadingState(Rotation2d robotAngle, double velocity, double timestamp) {
+        headingBuffer.addSample(timestamp, robotAngle);
+        headingVelocityBuffer.addSample(timestamp, velocity);
+    }
+
+    public static Optional<Rotation2d> getHeadingSample(double timestamp) {
+        return headingBuffer.getSample(timestamp);
+    }
+
+    private static Optional<Double> getHeadingVelocitySample(double timestamp) {
+        return headingVelocityBuffer.getSample(timestamp);
     }
 }
