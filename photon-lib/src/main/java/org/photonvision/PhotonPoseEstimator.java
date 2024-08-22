@@ -478,7 +478,7 @@ public class PhotonPoseEstimator {
             // calculate distance to the tag
             double hypot =
                     -PhotonUtils.calculateDistanceToTargetMeters(
-                            robotToCamera.getZ(), tagPose.get().getZ(), robotToCamera.getY(), tagAngle.getY());
+                            robotToCamera.getZ(), tagPose.get().getZ(), robotToCamera.getRotation().getY(), tagAngle.getY());
 
             // calculating the translation of the tag from the robot center on the floor plane
             double robotX = Math.sin(tagAngle.getZ() + robotToCamera.getRotation().getZ()) * hypot;
@@ -548,13 +548,15 @@ public class PhotonPoseEstimator {
 
             double dist1 = -PhotonUtils.calculateDistanceToTargetMeters(
                     robotToCamera.getZ(), tag1Pose.get().getZ(),
-                    robotToCamera.getY(), tag1Angle.getY()
+                    robotToCamera.getRotation().getY(), tag1Angle.getY()
             );
 
             double dist2 = -PhotonUtils.calculateDistanceToTargetMeters(
                     robotToCamera.getZ(), tag2Pose.get().getZ(),
-                    robotToCamera.getY(), tag2Angle.getY()
+                    robotToCamera.getRotation().getY(), tag2Angle.getY()
             );
+
+            System.out.println(robotToCamera.getRotation().getY());
 
             boolean tag1Primary = tag1Angle.getZ() < tag2Angle.getZ();
 
